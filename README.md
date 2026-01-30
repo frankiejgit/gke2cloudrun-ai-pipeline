@@ -1,89 +1,136 @@
 # AI on Containers - Demo
 
-# About
+## About
 
-This repository contains the source code and instructions for how to leverage Google Kubernetes Engine (GKE) for distributed AI/ML training and Cloud Run for model serving. GPUs can be attached to both services for high-demand workloads. 
-
-## Prerequisites
-
-- A GCP account and project
-- An IDE of choice (e.g. VSCode)
-- Docker
-
-Enable the following APIs on GCP:
-- Artifact Registry
-- Cloud Storage
-- Cloud Run
-- GKE
-- Cloud Build
+This repository demonstrates how to leverage **Google Kubernetes Engine (GKE)** for distributed AI/ML training and **Cloud Run** for model serving. It showcases best practices such as:
+- Containerizing PyTorch training and inference scripts.
+- Using Google Cloud Build for CI/CD.
+- Distributed Data Parallel (DDP) training on GKE using Indexed Jobs.
+- Storing artifacts in Google Cloud Storage (GCS).
+- Serving models securely and efficiently on Cloud Run.
 
 ## Directory Structure
 ```
-gke-distributed-training-demo/ 
-├── trainer/ 
-│ ├── train.py
-│ ├── data.py 
-│ └── utils.py (Optional) 
-├── serving/ 
-│ ├── app.py 
-│ └── requirements.txt 
-├── Dockerfile.train 
-├── Dockerfile.serving 
-├── k8s/ 
-│ └── job.yaml 
-├── .gitlab-ci.yml 
-├── requirements.txt 
+aioc-demo/
+├── trainer/                # Training component
+│   ├── train.py            # PyTorch training script (DDP enabled)
+│   ├── Dockerfile          # Dockerfile for training image
+│   └── requirements.txt    # Training dependencies
+├── serving/                # Serving component
+│   ├── app.py              # Flask inference app
+│   ├── Dockerfile          # Dockerfile for serving image
+│   └── requirements.txt    # Serving dependencies
+├── k8s/                    # Kubernetes manifests
+│   └── job.yaml            # GKE Indexed Job for distributed training
+├── cloudbuild.yaml         # Cloud Build CI/CD pipeline configuration
 └── README.md
 ```
 
+## Prerequisites
+
+- Google Cloud Project
+- Docker (optional, for local testing)
+- `gcloud` CLI installed and configured
+
 ## Setup
 
-### Setting up GCP project
+### 1. Environment Setup
 
-1/ Create the GCP project with the name you want: `aioc-demo`
-
-2/ Define the following environment variables
-```
+Define your environment variables:
+```bash
+export PROJECT_ID=aioc-demo
 export REGION=us-west1
-export PROJECT=aioc-demo
 export GAR_REPO=aioc-docker-repo
-export BUCKET=aioc-demo-bucket
+export BUCKET_NAME=aioc-demo-bucket
+export CLUSTER_NAME=aioc-cluster
 ```
 
-3/ Ensure you are logged in and set in the right project
-```
-gcloud auth login
+Initialize your project:
+```bash
+gcloud config set project ${PROJECT_ID}
 
-gcloud config set project ${PROJECT}
-```
-
-4/ Enable the following APIs
-```
+# Enable APIs
 gcloud services enable \
-	artifactregistry.googleapis.com \
-	storage-api.googleapis.com \
-	run.googleapis.com \
-	container.googleapis.com
+    artifactregistry.googleapis.com \
+    storage-api.googleapis.com \
+    run.googleapis.com \
+    container.googleapis.com \
+    cloudbuild.googleapis.com
 ```
 
-5/ Create a service account with necessary permissions
-```
-gcloud iam service-accounts create aioc-training-sa \ 
---display-name="AIoC Training Service Account"
+### 2. Infrastructure Creation
 
-gcloud projects add-iam-policy-binding ${PROJECT} \ 
---member="serviceAccount:aioc-training-sa@${PROJECT}.iam.gserviceaccount.com" \ 
---role="roles/storage.objectCreator"
-```
-
-### GKE Cluster Setup
-
-6/ Create a GKE Autopilot
-### Set up remaining infrastructure
-
-7/ Create a repository in Artifact Registry
-```
+**Artifact Registry:**
+```bash
 gcloud artifacts repositories create ${GAR_REPO} \
     --repository-format=docker \
     --location=${REGION}
 ```
+
+**GCS Bucket:**
+```bash
+gcloud storage buckets create gs://${BUCKET_NAME} --location=${REGION}
+```
+
+**Service Account & Workload Identity:**
+Create a Service Account for training:
+```bash
+gcloud iam service-accounts create aioc-training-sa --display-name="AIoC Training SA"
+
+# Grant storage admin access (for demo purposes; restrict in production)
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+    --member="serviceAccount:aioc-training-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="roles/storage.objectAdmin"
+```
+
+**GKE Cluster (Autopilot or Standard):**
+```bash
+gcloud container clusters create-auto ${CLUSTER_NAME} \
+    --region=${REGION} \
+    --project=${PROJECT_ID}
+```
+
+**Configure Workload Identity for GKE:**
+```bash
+# Allow Kubernetes ServiceAccount to impersonate Google Service Account
+gcloud iam service-accounts add-iam-policy-binding aioc-training-sa@${PROJECT_ID}.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:${PROJECT_ID}.svc.id.goog[default/aioc-training-sa]"
+```
+
+*Note: The `k8s/job.yaml` expects a Kubernetes ServiceAccount named `aioc-training-sa`.*
+
+### 3. Build & Deploy
+
+You can use Cloud Build to build images and prepare manifests.
+
+**Submit Build:**
+```bash
+gcloud builds submit --config=cloudbuild.yaml \
+    --substitutions=_REGION=${REGION},_GAR_REPO=${GAR_REPO},_BUCKET_NAME=${BUCKET_NAME}
+```
+
+**Run Training Job:**
+Apply the rendered manifest (after inspecting `k8s/job_rendered.yaml` generated by build, or manually substitute):
+```bash
+# Example manual substitution if not using Cloud Build to deploy
+sed -e "s|\\
+${IMAGE_URI}\\|${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/aioc-training:latest|g" \
+    -e "s|\\
+${BUCKET_NAME}\\|${BUCKET_NAME}|g" \
+    k8s/job.yaml | kubectl apply -f - 
+```
+
+**Deploy Serving to Cloud Run:**
+```bash
+gcloud run deploy aioc-serving \
+    --image=${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/aioc-serving:latest \
+    --region=${REGION} \
+    --platform=managed \
+    --allow-unauthenticated \
+    --set-env-vars=BUCKET_NAME=${BUCKET_NAME}
+```
+
+## Architecture Notes
+- **Training**: Uses PyTorch `DistributedDataParallel`. The GKE Job is configured as an `Indexed` Job to provide stable hostnames (via Headless Service) and unique indices (`RANK`) to each pod.
+- **Serving**: Uses Flask + Gunicorn. On startup, it checks the GCS bucket for the trained model. If found, it downloads it; otherwise, it falls back to a default pre-trained model.

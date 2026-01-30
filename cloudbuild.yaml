@@ -1,25 +1,48 @@
 steps:
+  # Build Trainer
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-training:latest', '-f', 'Dockerfile.train', '.']
+    dir: 'trainer'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-training:${SHORT_SHA}', '.']
+  
+  # Push Trainer
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-training:latest']
-  - name: 'gcr.io/cloud-builders/kubectl'
-    args: ['apply', '-f', 'kubernetes/job.yaml']
-    env:
-      - 'CLOUDSDK_COMPUTE_ZONE=${_ZONE}'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-training:${SHORT_SHA}']
 
-  # - name: 'gcr.io/cloud-builders/docker'
-  #   args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-serving:latest', '-f', 'Dockerfile.serving', '.']
-  # - name: 'gcr.io/cloud-builders/docker'
-  #   args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-serving:latest']
-  # - name: 'gcr.io/cloud-builders/gcloud'
-  #   args: ['run', 'deploy', 'aioc-serving', '--image', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-serving:latest', '--region', '${_REGION}', '--platform', 'managed']
+  # Build Serving
+  - name: 'gcr.io/cloud-builders/docker'
+    dir: 'serving'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-serving:${SHORT_SHA}', '.']
+
+  # Push Serving
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-serving:${SHORT_SHA}']
+
+  # Prepare K8s Job manifest
+  - name: 'ubuntu'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - | 
+        sed -e "s|"${_IMAGE_URI}"|${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-training:${SHORT_SHA}|g" \
+            -e "s|"${_BUCKET_NAME}"|${_BUCKET_NAME}|g" \
+            k8s/job.yaml > k8s/job_rendered.yaml
+        cat k8s/job_rendered.yaml
+
+  # (Optional) Deploy to GKE
+  # To enable, uncomment and set _CLUSTER and _ZONE in substitutions or trigger
+  # - name: 'gcr.io/cloud-builders/kubectl'
+  #   args: ['apply', '-f', 'k8s/job_rendered.yaml']
+  #   env:
+  #     - 'CLOUDSDK_COMPUTE_ZONE=${_ZONE}'
+  #     - 'CLOUDSDK_CONTAINER_CLUSTER=${_CLUSTER}'
 
 substitutions:
-  _REGION: 'us-west1'  
-  _GAR_REPO: 'aioc-docker-repo'  
-  _ZONE: 'us-west1-b'
+  _REGION: 'us-west1'
+  _GAR_REPO: 'aioc-docker-repo'
+  _BUCKET_NAME: 'aioc-demo-bucket'
+  # _ZONE: 'us-west1-b'
+  # _CLUSTER: 'aioc-cluster'
 
 images:
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-training:latest'
-  # - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-serving:latest'  
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-training:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_GAR_REPO}/aioc-serving:${SHORT_SHA}'

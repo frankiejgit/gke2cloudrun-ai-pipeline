@@ -1,5 +1,5 @@
 torch
 transformers
-datasets
-google-cloud-storage
 flask
+google-cloud-storage
+gunicorn

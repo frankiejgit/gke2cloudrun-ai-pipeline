@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: distilbert-training-svc
+spec:
+  clusterIP: None
+  selector:
+    job-name: distilbert-training # Indexed Job adds this label automatically? No, usually 'job-name' label is added by controller. 
+    # Better to use the app label.
+    app: distilbert-training
+  ports:
+  - port: 29500
+    name: pytorch
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: distilbert-training
+spec:
+  completions: 2
+  parallelism: 2
+  completionMode: Indexed
+  template:
+    metadata:
+      labels:
+        app: distilbert-training
+    spec:
+      subdomain: distilbert-training-svc # Required for stable DNS records with Headless Service
+      serviceAccountName: aioc-training-sa
+      containers:
+      - name: trainer
+        image: ${IMAGE_URI}
+        command:
+        - "bash"
+        - "-c"
+        - |
+          export RANK=${JOB_COMPLETION_INDEX}
+          export WORLD_SIZE=2
+          export MASTER_ADDR=distilbert-training-0.distilbert-training-svc
+          export MASTER_PORT=29500
+          export LOCAL_RANK=0
+          python train.py
+        env:
+        - name: BUCKET_NAME
+          value: "${BUCKET_NAME}"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: "8Gi"
+          requests:
+            cpu: "2"
+            memory: "4Gi"
+      restartPolicy: Never
