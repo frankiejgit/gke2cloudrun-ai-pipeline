@@ -1,4 +1,4 @@
-# AI on Containers - Demo
+# GKE to Cloud Run AI Pipeline
 
 ## About
 
@@ -11,7 +11,7 @@ This repository demonstrates how to leverage **Google Kubernetes Engine (GKE)** 
 
 ## Directory Structure
 ```
-aioc-demo/
+gke2run_pipeline/
 ├── trainer/                # Training component
 │   ├── train.py            # PyTorch training script (DDP enabled)
 │   ├── Dockerfile          # Dockerfile for training image
